@@ -1,0 +1,6 @@
+# Same Spark version family as AWS Glue 5.0 (Spark 3.5, Python 3.11)
+pyspark==3.5.3
+duckdb>=1.1
+pyarrow>=15
+pytest>=8
+kafka-python>=2.1

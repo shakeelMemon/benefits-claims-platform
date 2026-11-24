@@ -1,0 +1,146 @@
+{
+  "Comment": "Nightly group benefits claims pipeline: batch extracts to bronze, silver, gold dimensions and facts, then a data-quality gate. Any failure is caught and alerted through SNS.",
+  "StartAt": "HasRunDate",
+  "States": {
+    "HasRunDate": {
+      "Type": "Choice",
+      "Choices": [
+        { "Variable": "$.run_date", "IsPresent": true, "Next": "LoadBatchExtracts" }
+      ],
+      "Default": "UseToday"
+    },
+    "UseToday": {
+      "Type": "Pass",
+      "Comment": "Scheduled runs don't pass a date, so take it from the execution start time",
+      "Parameters": {
+        "run_date.$": "States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 0)"
+      },
+      "Next": "LoadBatchExtracts"
+    },
+    "LoadBatchExtracts": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${job_prefix}-bronze-batch",
+        "Arguments": { "--run_date.$": "$.run_date" }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["Glue.ConcurrentRunsExceededException", "Glue.ThrottlingException", "Glue.InternalServiceException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" } ],
+      "Next": "BuildSilver"
+    },
+    "BuildSilver": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${job_prefix}-silver",
+        "Arguments": { "--run_date.$": "$.run_date" }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["Glue.ConcurrentRunsExceededException", "Glue.ThrottlingException", "Glue.InternalServiceException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" } ],
+      "Next": "BuildDimensions"
+    },
+    "BuildDimensions": {
+      "Type": "Parallel",
+      "Comment": "The member SCD2 and the other dimensions don't depend on each other, so they run side by side",
+      "ResultPath": null,
+      "Branches": [
+        {
+          "StartAt": "DimMemberSCD2",
+          "States": {
+            "DimMemberSCD2": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "${job_prefix}-gold-dim-member",
+                "Arguments": { "--run_date.$": "$.run_date" }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "ConformedDimensions",
+          "States": {
+            "ConformedDimensions": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "${job_prefix}-gold-dimensions",
+                "Arguments": { "--run_date.$": "$.run_date" }
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" } ],
+      "Next": "BuildFactsAndMarts"
+    },
+    "BuildFactsAndMarts": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${job_prefix}-gold-facts",
+        "Arguments": { "--run_date.$": "$.run_date" }
+      },
+      "ResultPath": null,
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" } ],
+      "Next": "RunDataQuality"
+    },
+    "RunDataQuality": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${job_prefix}-data-quality",
+        "Arguments": { "--run_date.$": "$.run_date" }
+      },
+      "ResultPath": null,
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "NotifyFailure" } ],
+      "Next": "NotifySuccess"
+    },
+    "NotifySuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${sns_topic_arn}",
+        "Subject": "Claims pipeline succeeded",
+        "Message.$": "States.Format('Claims pipeline finished for {}. Gold tables passed the data-quality gate and are ready.', $.run_date)"
+      },
+      "ResultPath": null,
+      "Next": "Done"
+    },
+    "Done": { "Type": "Succeed" },
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${sns_topic_arn}",
+        "Subject": "Claims pipeline FAILED",
+        "Message.$": "States.Format('Claims pipeline failed for {}. Error: {}. Cause: {}', $.run_date, $.error.Error, $.error.Cause)"
+      },
+      "ResultPath": null,
+      "Next": "PipelineFailed"
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "A pipeline step failed. See the SNS alert and the Glue job logs in CloudWatch."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+Rules = [
+    RowCount > 0,
+    IsComplete "claim_id",
+    IsUnique "claim_id",
+    IsComplete "member_sk",
+    IsComplete "submitted_ts",
+    ColumnValues "claim_status" in ["SUBMITTED", "ADJUDICATED", "PAID", "DENIED"],
+    ColumnValues "amount_claimed" >= 0,
+    CustomSql "select count(*) from primary where amount_paid > amount_claimed" = 0,
+    ColumnValues "benefit_type" in ["DRUG", "DENTAL", "PARAMEDICAL", "VISION", "HEALTH"]
+]

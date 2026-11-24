@@ -1,0 +1,13 @@
+local/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl
+infra/terraform/*.tfstate*
+infra/terraform/terraform.tfvars
+infra/terraform/build/
+
+# Personal study guide (kept local)
+docs/Benefits_Claims_Platform_Project_Guide.pdf
