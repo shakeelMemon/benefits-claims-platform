@@ -13,23 +13,17 @@ All data is synthetic: 3,000 members in 4 employer groups, 28 providers, and abo
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  subgraph Sources
-    K[Claims system<br/>claim events] -->|Kafka topic<br/>claims.events| S
-    P[Policy admin<br/>members_YYYYMMDD.csv] --> L
-    F[Finance<br/>premiums, plans, providers] --> L
-  end
-  S[Glue streaming job<br/>stream_claims_to_bronze] --> B[(Bronze<br/>raw + audit cols)]
-  L[(S3 landing)] --> BB[Glue job<br/>bronze_batch] --> B
-  B --> SV[Glue job<br/>silver] --> SL[(Silver<br/>clean, deduped, PII removed)]
-  SV --> Q[(Quarantine<br/>with reason)]
-  SL --> DM[dim_member SCD2] & DD[dim plan / provider / date]
-  DM & DD --> FC[Glue job<br/>facts and marts] --> G[(Gold<br/>star schema + marts)]
-  G --> DQ{Data-quality gate}
-  DQ -->|pass| OK[SNS: ready] --> A[Athena / Power BI]
-  DQ -->|critical fail| AL[SNS: failed]
-```
+**Data flow:** every run ends at a quality gate before the data is released.
+
+![Data flow](docs/images/data_flow.png)
+
+**AWS architecture:** one nightly Step Functions run turns S3 files into governed Athena tables.
+
+![AWS architecture](docs/images/aws_architecture.png)
+
+**Real-time ingest:** a claim created in a .NET claims app reaches bronze in AWS about three minutes later.
+
+![Real-time ingest](docs/images/realtime_ingest.png)
 
 The nightly batch is a **Step Functions** state machine (`orchestration/claims_pipeline.asl.json`) started by **EventBridge Scheduler** at 02:00 Toronto time. Any failed step is caught and sends an SNS alert.
 
@@ -104,10 +98,12 @@ aws glue start-crawler --name claims-gold-crawler                # then query in
 
 The batch path costs cents per run (6 short Glue jobs at 2 workers). The streaming path (MSK + Glue streaming job) is off by default because it bills by the hour; turn it on with `-var enable_streaming=true` only for a demo, then turn it off.
 
-## What is tested
+## What was tested where
 
-- **Tested here:** the generator, all batch jobs, the streaming job reading files, the state machine (local interpreter, including the failure path), 15 unit tests, and the business queries.
-- **Written but not run against AWS or a live Kafka broker yet:** the Terraform, the Glue runtime path (`awsglue` imports), and the Kafka producer and Kafka source. The Terraform files parse cleanly; `terraform validate` and a first `apply` are the next step.
+- **Run locally:** the generator, all batch jobs, the streaming job reading files, the state machine (local interpreter, including the failure path), 15 unit tests, and the business queries.
+- **Deployed and run in AWS (ca-central-1, Oct 2026):** Terraform built S3, KMS, IAM, the Glue jobs, catalog and crawler, Step Functions, EventBridge Scheduler, SNS, the CloudWatch alarm and Athena. The state machine loaded day 1 (700 claims) through bronze, silver and gold, and Athena answered the business questions.
+- **Real-time path verified end to end:** claims created in a .NET claims app went through Kafka (Docker), the Kafka-to-S3 sink, EventBridge, Step Functions and the Glue stream job, reaching bronze about three minutes after creation.
+- **Optional, left off to save cost:** the Amazon MSK streaming path (`enable_streaming = true`), which bills by the hour.
 
 ## Project layout
 
